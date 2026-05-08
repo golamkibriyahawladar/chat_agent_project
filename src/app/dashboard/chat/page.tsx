@@ -259,7 +259,7 @@ export default function ChatPage() {
 
       // Optimistically update UI immediately before DB call
       if (activeConversation && activeConversation.id === id) {
-        setActiveConversation(prev => ({ ...prev, is_ai_mode: isAiMode } as any));
+        setActiveConversation((prev: any) => ({ ...prev, is_ai_mode: isAiMode } as any));
       }
 
       // Automatic timer trigger when toggling to Manual Mode (isAiMode === false) via Switch
@@ -272,7 +272,7 @@ export default function ChatPage() {
           fetchConversations(selectedAgentId);
         } else {
           // Revert optimistic update on error
-          setActiveConversation(prev => ({ ...prev, is_ai_mode: !isAiMode } as any));
+          setActiveConversation((prev: any) => ({ ...prev, is_ai_mode: !isAiMode } as any));
         }
         return;
       }
@@ -296,7 +296,7 @@ export default function ChatPage() {
       } else {
         // Revert optimistic update on error
         if (activeConversation && activeConversation.id === id) {
-          setActiveConversation(prev => ({ ...prev, is_ai_mode: !isAiMode } as any));
+          setActiveConversation((prev: any) => ({ ...prev, is_ai_mode: !isAiMode } as any));
         }
       }
     };

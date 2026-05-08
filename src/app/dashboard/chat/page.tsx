@@ -252,50 +252,54 @@ export default function ChatPage() {
     }));
   };
 
-  // Toggle AI Mode
-  const toggleUserAi = async (isAiMode: boolean, specificChatId?: string) => {
-    const id = specificChatId || activeChatId;
-    if (!id) return;
+    // Toggle AI Mode – also update local activeConversation for chat widget
+    const toggleUserAi = async (isAiMode: boolean, specificChatId?: string) => {
+      const id = specificChatId || activeChatId;
+      if (!id) return;
 
-    // Automatic timer trigger when toggling to Manual Mode (isAiMode === false) via Switch
-    const mins = parseInt(timerInput);
-    if (!isAiMode && id === activeChatId && !isNaN(mins) && mins > 0) {
-      const { error } = await supabase.from("conversations").update({ is_ai_mode: false }).eq("id", id);
+      // Optimistically update UI immediately before DB call
+      if (activeConversation && activeConversation.id === id) {
+        setActiveConversation(prev => ({ ...prev, is_ai_mode: isAiMode } as any));
+      }
+
+      // Automatic timer trigger when toggling to Manual Mode (isAiMode === false) via Switch
+      const mins = parseInt(timerInput);
+      if (!isAiMode && id === activeChatId && !isNaN(mins) && mins > 0) {
+        const { error } = await supabase.from("conversations").update({ is_ai_mode: false }).eq("id", id);
+        if (!error) {
+          await applyTimer(id, mins);
+          setTimerInput("");
+          fetchConversations(selectedAgentId);
+        } else {
+          // Revert optimistic update on error
+          setActiveConversation(prev => ({ ...prev, is_ai_mode: !isAiMode } as any));
+        }
+        return;
+      }
+
+      const { error } = await supabase
+        .from("conversations")
+        .update({ is_ai_mode: isAiMode })
+        .eq("id", id);
+
       if (!error) {
-        await applyTimer(id, mins);
-        setTimerInput("");
+        // If manually toggled back to AI, clear any active timers
+        if (isAiMode && activeTimers[id]) {
+          clearTimeout(activeTimers[id].timeout);
+          setActiveTimers(prev => {
+            const next = { ...prev };
+            delete next[id];
+            return next;
+          });
+        }
         fetchConversations(selectedAgentId);
+      } else {
+        // Revert optimistic update on error
+        if (activeConversation && activeConversation.id === id) {
+          setActiveConversation(prev => ({ ...prev, is_ai_mode: !isAiMode } as any));
+        }
       }
-      return;
-    }
-
-    const { error } = await supabase
-      .from("conversations")
-      .update({ is_ai_mode: isAiMode })
-      .eq("id", id);
-
-    if (!error) {
-      // If manually toggled back to AI, clear any active timers
-      if (isAiMode && activeTimers[id]) {
-        clearTimeout(activeTimers[id].timeout);
-        setActiveTimers(prev => {
-          const next = { ...prev };
-          delete next[id];
-          return next;
-        });
-      }
-      if (isAiMode) {
-        try {
-          const saved = JSON.parse(localStorage.getItem('chat_timers') || '{}');
-          if (saved[id]) {
-            delete saved[id];
-            localStorage.setItem('chat_timers', JSON.stringify(saved));
-          }
-        } catch(e) {}
-      }
-      fetchConversations(selectedAgentId);
-    }
-  };
+    };
 
   // Explicit Toggle Human Mode with Timer button
   const toggleHumanWithTimer = async () => {
@@ -347,6 +351,31 @@ export default function ChatPage() {
         isInitialLoadRef.current = true;
         return [...prev, historyRes.data];
       });
+
+      // Trigger webhook if agent has one configured
+      try {
+        const { data: agentData } = await supabase
+          .from("agents")
+          .select("webhook_url")
+          .eq("id", activeConversation.agent_id)
+          .single();
+
+        if (agentData?.webhook_url) {
+          await fetch(agentData.webhook_url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              sessionId: `${activeConversation.company_id}_${activeConversation.agent_id}_${activeConversation.contact_phone}`,
+              chatInput: input,
+              contact_phone: activeConversation.contact_phone,
+              contact_name: activeConversation.contact_name,
+              replied_by: "human_agent"
+            })
+          });
+        }
+      } catch (e) {
+        console.error("Webhook trigger failed:", e);
+      }
     }
   };
 
@@ -415,7 +444,12 @@ export default function ChatPage() {
           table: 'conversations',
           filter: `company_id=eq.${companyId}`
         },
-        () => fetchConversations(selectedAgentId)
+        (payload: any) => {
+          fetchConversations(selectedAgentId);
+          if (activeConversationRef.current && payload.new && payload.new.id === activeConversationRef.current.id) {
+             setActiveConversation((prev: any) => ({ ...prev, ...payload.new }));
+          }
+        }
       )
       .on(
         'postgres_changes',
@@ -532,6 +566,9 @@ export default function ChatPage() {
                     "chat-conv-item__avatar",
                     activeChatId === conv.id ? "border-white/30" : "border-zinc-200"
                   )}>
+                    {(conv.contact_avatar || conv.contact_avatar_url || conv.avatar || conv.avatar_url) && (
+                      <AvatarImage src={conv.contact_avatar || conv.contact_avatar_url || conv.avatar || conv.avatar_url} />
+                    )}
                     <AvatarFallback className={cn(
                       "text-xs font-bold",
                       activeChatId === conv.id 
@@ -571,7 +608,7 @@ export default function ChatPage() {
                   <Switch 
                     checked={conv.is_ai_mode} 
                     onCheckedChange={(val) => toggleUserAi(val, conv.id)}
-                    className="scale-[0.6] data-[state=checked]:bg-white data-[state=unchecked]:bg-zinc-300"
+                    className="scale-[0.6] cursor-pointer data-[state=checked]:bg-white data-[state=unchecked]:bg-zinc-300"
                   />
                   {remainingTimes[conv.id] && (
                     <span className={cn(
@@ -608,6 +645,9 @@ export default function ChatPage() {
                 </Button>
                 <div className="chat-header__avatar-wrap">
                   <Avatar className="chat-header__avatar">
+                    {(activeConversation.contact_avatar || activeConversation.contact_avatar_url || activeConversation.avatar || activeConversation.avatar_url) && (
+                      <AvatarImage src={activeConversation.contact_avatar || activeConversation.contact_avatar_url || activeConversation.avatar || activeConversation.avatar_url} />
+                    )}
                     <AvatarFallback className="bg-gradient-to-br from-primary/15 to-primary/5 text-primary text-sm font-bold">
                       {activeConversation.contact_name?.[0]}
                     </AvatarFallback>
@@ -668,7 +708,7 @@ export default function ChatPage() {
                   <Switch 
                     checked={activeConversation.is_ai_mode} 
                     onCheckedChange={(val) => toggleUserAi(val, activeChatId!)}
-                    className="scale-[0.7] data-[state=checked]:bg-primary"
+                    className="scale-[0.7] cursor-pointer data-[state=checked]:bg-primary"
                   />
                 </div>
 
@@ -713,7 +753,17 @@ export default function ChatPage() {
                   }
                   
                   const isHuman = msgObj?.type === 'human';
-                  const content = msgObj?.content || "";
+                  // For human messages: prefer customer_message field, fallback to content
+                  let content = isHuman
+                    ? (msgObj?.customer_message || msgObj?.content || "")
+                    : (msgObj?.content || "");
+                  
+                  if (typeof content === 'string' && content.includes('customer_message:')) {
+                    const match = content.match(/customer_message:\s*(.*?)(?:\n|$)/i);
+                    if (match && match[1]) {
+                      content = match[1].trim();
+                    }
+                  }
                   
                   return (
                     <div key={row.id} className={cn("chat-bubble-row", isHuman ? "chat-bubble-row--left" : "chat-bubble-row--right")}>
